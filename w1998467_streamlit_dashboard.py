@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ─── CSS ─────────────────────────────────────────────────────────────────────
+#CSS
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sora:wght@600;700&display=swap');
@@ -217,7 +217,7 @@ label,.stSelectbox label,.stNumberInput label,.stTextInput label,.stRadio label{
 </style>
 """, unsafe_allow_html=True)
 
-# ─── DATA & MODELS ────────────────────────────────────────────────────────────
+#DATA & MODELS
 @st.cache_data
 def load_data():
     df = pd.read_csv("MI_finaldf.csv")
@@ -243,7 +243,7 @@ df = load_data()
 MI_SERVICES = ["CMED","CSURG","MED","NMED","VSURG","SURG","OMED","NSURG","TRAUM","TSURG","Other"]
 mi_svcs_in_data = [s for s in MI_SERVICES if s in df["curr_service"].unique()]
 
-# ─── PLOT HELPERS ─────────────────────────────────────────────────────────────
+#PLOT HELPERS
 CHART_BG = "rgba(236,239,245,0.75)"
 GRID     = "rgba(15,45,94,0.06)"
 FC       = "#4a5a74"                   # axis/tick text
@@ -343,7 +343,7 @@ def make_gauge(value, title):
                       margin=dict(l=30,r=30,t=60,b=10), height=260)
     return fig
 
-# ─── PREDICTION HELPERS ───────────────────────────────────────────────────────
+#PREDICTION HELPERS
 CAT_LOS   = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
 NUM_LOS   = ["age","num_diagnoses_at_admission"]
 CAT_MORT  = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
@@ -410,7 +410,7 @@ def avg_read_sim(inp):
     return round(s["days_to_readmit"].mean() if len(s)>=5
                  else df[df["readmit_30d"]==1]["days_to_readmit"].mean(), 1)
 
-# ─── SESSION STATE ────────────────────────────────────────────────────────────
+#SESSION STATE
 if "patients" not in st.session_state: st.session_state.patients = {}
 if "doc_avail" not in st.session_state:
     st.session_state.doc_avail = {
@@ -434,17 +434,17 @@ DOCTORS = {
     "Acute MI team":                {"spec":"Emergency Medicine/Internal Medicine","tel":"+94 11 269 4009"},
 }
 
-# ─── SESSION STATE FOR FILTERS ───────────────────────────────────────────────
-# Apply reset before widgets are instantiated
+#SESSION STATE FOR FILTERS
+#Applying reset before widgets are instantiated
 if st.session_state.get("_reset", False):
     for k in ["hl_radio","svc_sel","adm_sel","gen_sel","age_sel"]:
         if k in st.session_state:
             del st.session_state[k]
     del st.session_state["_reset"]
 
-# ─── SIDEBAR ──────────────────────────────────────────────────────────────────
+#SIDEBAR
 with st.sidebar:
-    # Hospital branding
+    #Hospital branding
     st.markdown("""
     <div style="padding:1.2rem 0.5rem 0.8rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:1rem">
       <div style="font-size:2rem;margin-bottom:0.4rem">🏥</div>
@@ -457,7 +457,7 @@ with st.sidebar:
                 unsafe_allow_html=True)
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0 0 1rem 0">', unsafe_allow_html=True)
 
-    # Outcome Highlight
+    #Outcome Highlight
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem">Outcome Highlight</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("hl_radio", "All")
@@ -466,7 +466,7 @@ with st.sidebar:
 
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0.8rem 0">', unsafe_allow_html=True)
 
-    # Clinical Service
+    #Clinical Service
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem">Clinical Service</p>',
                 unsafe_allow_html=True)
     svc_opts = ["All"]+mi_svcs_in_data
@@ -474,7 +474,7 @@ with st.sidebar:
     sel_svc  = st.selectbox("Clinical Service", svc_opts,
                              label_visibility="collapsed", key="svc_sel")
 
-    # Admission Type
+    #Admission Type
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Admission Type</p>',
                 unsafe_allow_html=True)
     adm_opts = ["All"]+sorted(df["admission_type"].dropna().unique().tolist())
@@ -482,14 +482,14 @@ with st.sidebar:
     sel_adm  = st.selectbox("Admission Type", adm_opts,
                              label_visibility="collapsed", key="adm_sel")
 
-    # Gender
+    #Gender
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Gender</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("gen_sel", "All")
     sel_gender = st.selectbox("Gender",["All","Male (M)","Female (F)"],
                                label_visibility="collapsed", key="gen_sel")
 
-    # Age Group
+    #Age Group
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Age Group</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("age_sel", "All")
@@ -499,10 +499,10 @@ with st.sidebar:
 
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0 0.7rem 0">', unsafe_allow_html=True)
 
-    # Patient count — computed after filters applied, so use placeholder
+    #Patient count — computed after filters applied, so use placeholder
     count_placeholder = st.empty()
 
-    # Reset button
+    #Reset button
     if st.button("↺  Reset Filters", key="reset_btn", use_container_width=True):
         st.session_state["_reset"] = True
         st.rerun()
@@ -510,9 +510,9 @@ with st.sidebar:
     st.markdown('<p style="font-size:0.65rem;color:#334155;margin-top:0.8rem">Filters apply to Hospital Overview tab.</p>',
                 unsafe_allow_html=True)
 
-# ─── APPLY FILTERS ────────────────────────────────────────────────────────────
+#APPLY FILTERS
 dff = df.copy()
-# Age group filter
+#Age group filter
 _age_bins = {"<40":(0,39),"40–50":(40,49),"50–60":(50,59),
              "60–70":(60,69),"70–80":(70,79),"80+":(80,999)}
 if sel_age_grp != "All":
@@ -524,7 +524,7 @@ if sel_adm!="All":
     dff = dff[dff["admission_type"]==sel_adm]
 if sel_svc!="All":
     dff = dff[dff["curr_service"]==sel_svc]
-# Update patient count in sidebar
+#Updating patient count in sidebar
 count_placeholder.markdown(
     f'<p style="font-size:0.82rem;font-weight:700;color:#93c5fd;margin:0">'    f'Showing: <span style="font-size:1rem;color:#f1f5f9">{len(dff):,}</span> patients</p>',
     unsafe_allow_html=True
@@ -563,15 +563,14 @@ tab1, tab2, tab3 = st.tabs([
     "🔄  POST-ADMISSION UPDATE",
 ])
 
-# ═════════════════════════════════════════════════════════════════════════════
 # TAB 1
-# ═════════════════════════════════════════════════════════════════════════════
+
 with tab1:
     if len(dff)==0:
         st.warning("No data matches the current filters.")
         st.stop()
 
-    # ── KPI row ──────────────────────────────────────────────────────────────
+    #KPI row
     k1,k2,k3,k4,k5 = st.columns(5)
     for col,icon,label,val,sub,outcome in [
         (k1,"🏥","Total MI Admissions",  f"{len(dff):,}",                                           "All patients",      "None"),
@@ -592,7 +591,7 @@ with tab1:
 
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-    # ── SECTION 1: Demographics ───────────────────────────────────────────────
+    #SECTION 1: Demographics
     st.markdown('<div class="section-title">Patient Demographics & Trends</div>', unsafe_allow_html=True)
     c1,c2,c3 = st.columns([1.4,2,1.8])
 
@@ -618,7 +617,7 @@ with tab1:
                 bgcolor="rgba(15,45,94,0.88)",
                 bordercolor="rgba(255,255,255,0.2)", borderwidth=1,
             ),
-            # No annotation in center — cleaner
+            #No annotation in center
         )
         chart(fig)
         st.markdown(dim_end(), unsafe_allow_html=True)
@@ -660,8 +659,8 @@ with tab1:
         chart(fig)
         st.markdown(dim_end(), unsafe_allow_html=True)
 
-    # ── SECTION 2: Clinical Outcomes ──────────────────────────────────────────
-    # Row 2: Age Distribution | LOS by Service | Mortality by Age & Gender
+    #SECTION 2: Clinical Outcomes
+    #Row 2: Age Distribution | LOS by Service | Mortality by Age & Gender
     st.markdown('<div class="section-title">Clinical Outcomes Analysis</div>', unsafe_allow_html=True)
     c4,c5,c6 = st.columns(3)
 
@@ -701,7 +700,7 @@ with tab1:
         st.markdown(dim_end(), unsafe_allow_html=True)
 
     with c6:
-        # Mortality Rate by Age & Gender — continuous age, 5-year bins
+        #Mortality Rate by Age & Gender — continuous age, 5-year bins
         st.markdown(dim_start("Mortality"), unsafe_allow_html=True)
         sub_mort = dff.copy()
         sub_mort["age_bin"] = (sub_mort["age"]//5)*5
@@ -722,7 +721,7 @@ with tab1:
         chart(fig, "Mortality")
         st.markdown(dim_end(), unsafe_allow_html=True)
 
-    # ── SECTION 3: Row 3 — Mortality by Admission Type | Heatmap ─────────────
+    #SECTION 3: Row 3 - Mortality by Admission Type | Heatmap
     c9,c10 = st.columns(2)
 
     with c9:
@@ -776,7 +775,7 @@ with tab1:
         chart(fig)
         st.markdown(dim_end(), unsafe_allow_html=True)
 
-    # ── SECTION 4: Hospital Operations ───────────────────────────────────────
+    #SECTION 4: Hospital Operations
     st.markdown('<div class="section-title">Hospital Operations</div>', unsafe_allow_html=True)
     op1,op2 = st.columns(2)
 
@@ -796,7 +795,7 @@ with tab1:
         st.markdown(dim_end(), unsafe_allow_html=True)
 
     with op2:
-        # 30-Day Readmission Rate by Age Group
+        #30-Day Readmission Rate by Age Group
         st.markdown(dim_start("Readmission"), unsafe_allow_html=True)
         age_read = dff.copy()
         age_read["age_group"] = pd.cut(age_read["age"],
@@ -822,7 +821,7 @@ with tab1:
         chart(fig, "Readmission")
         st.markdown(dim_end(), unsafe_allow_html=True)
 
-    # ── Ward + Cost (Est.) ────────────────────────────────────────────────────
+    #Ward + Cost (Est.)
     st.markdown("<div style='height:0.2rem'></div>", unsafe_allow_html=True)
     c7,c8 = st.columns([1.1,1.9])
 
@@ -850,10 +849,10 @@ with tab1:
         st.markdown('</div>', unsafe_allow_html=True)
 
     with c8:
-        # LKR cost estimates — Sri Lankan hospital data
-        # Avg LOS: <7 days=3.5d, ≥7 days=12.8d
-        # Ward Rs.10,000/day | ICU Rs.15,000/day (occupied bed)
-        # Procedure: <7d = Coronary Angiogram Rs.37,400 | ≥7d = PTCA+1 stent Rs.583,000
+        #LKR cost estimates - Sri Lankan hospital data
+        #Avg LOS: <7 days=3.5d, ≥7 days=12.8d
+        #Ward Rs.10,000/day | ICU Rs.15,000/day (occupied bed)
+        #Procedure: <7d = Coronary Angiogram Rs.37,400 | ≥7d = PTCA+1 stent Rs.583,000
         cost_df = pd.DataFrame({
             "LOS":  ["< 7 days"]*4 + ["≥ 7 days"]*4,
             "Type": ["Ward Cost","ICU Cost","Avg Procedure","Total Average"]*2,
@@ -890,7 +889,7 @@ with tab1:
         )
         chart(fig)
 
-    # ── MEDICAL STAFF ─────────────────────────────────────────────────────────
+    #MEDICAL STAFF
     st.markdown('<div class="section-title">Medical Staff</div>', unsafe_allow_html=True)
     dcols = st.columns(5)
     for i,(name,info) in enumerate(DOCTORS.items()):
@@ -909,9 +908,9 @@ with tab1:
                 st.session_state.doc_avail[name] = not avail
                 st.rerun()
 
-# ═════════════════════════════════════════════════════════════════════════════
+
 # TAB 2
-# ═════════════════════════════════════════════════════════════════════════════
+
 with tab2:
     # Increment form_version to force all widgets to re-create with fresh keys
     if st.session_state.get("_reset_form", False):
@@ -922,7 +921,7 @@ with tab2:
     next_pid   = max(st.session_state.patients.keys())+1 if st.session_state.patients else 1001
     next_hadm  = next_pid + 20000  # suggest HADM_ID offset from patient ID
 
-    # ── ID suggestion bar ────────────────────────────────────────────────────
+    #ID suggestion bar
     id1, id2, _ = st.columns([0.9, 0.9, 3.2])
     with id1:
         st.markdown(f'<div class="next-pid">🪪 &nbsp; Suggested Patient ID: &nbsp;<span>P-{next_pid}</span></div>',
@@ -933,7 +932,7 @@ with tab2:
 
     form_col, prev_col = st.columns([1.6, 1])
 
-    # ── LEFT: Input Form ──────────────────────────────────────────────────────
+    #LEFT: Input Form
     with form_col:
         st.markdown('<div class="section-title" style="margin-top:0.3rem">Patient Input Form</div>',
                     unsafe_allow_html=True)
@@ -957,7 +956,7 @@ with tab2:
                                      height=90, key=f"comments_inp_{fv}")
         save_clicked = st.button("💾  Save Patient & Predict", key=f"save_btn_{fv}", use_container_width=True)
 
-    # ── RIGHT: Live Preview ───────────────────────────────────────────────────
+    #RIGHT: Live Preview
     with prev_col:
         st.markdown('<div class="section-title" style="margin-top:0.3rem">Live Predictions</div>',
                     unsafe_allow_html=True)
@@ -993,19 +992,19 @@ with tab2:
               <div style="font-size:0.68rem;color:#94a3b8;margin-top:0.2rem">Based on {lal} days × LKR 10,000/day · ward room only</div>
             </div>""", unsafe_allow_html=True)
 
-            # Mortality card
+            #Mortality card
             st.markdown(f"""
             <div class="live-card">
               <div class="live-label">⚡ Live Mortality Estimate</div>
               <div class="{mc}" style="font-family:'Sora',sans-serif;font-size:2.2rem;font-weight:700;margin:0.3rem 0">{mpv}%</div>
             </div>""", unsafe_allow_html=True)
 
-            # Gauge
+            #Gauge
             fig_live = make_gauge(mpv,"Mortality Risk (Live)")
             fig_live.update_layout(height=200,margin=dict(l=20,r=20,t=45,b=5))
             st.plotly_chart(fig_live,use_container_width=True)
 
-            # Similar patients donut — LOS distribution
+            #Similar patients donut — LOS distribution
             _pmi = int(pmi_inp)
             sim = df[
                 (df["age"].between(age_inp-10,age_inp+10)) &
@@ -1064,7 +1063,7 @@ with tab2:
         except Exception:
             st.info("Fill in the form to see live predictions.")
 
-    # ── Save logic ────────────────────────────────────────────────────────────
+    #Save logic
     if save_clicked:
         if not patient_name.strip():
             st.error("Please enter a patient name.")
@@ -1092,7 +1091,7 @@ with tab2:
             st.session_state["_reset_form"] = True
             st.rerun()
 
-    # ── Recent admissions table ───────────────────────────────────────────────
+    #Recent admissions table
     if st.session_state.patients:
         st.markdown('<div class="section-title">Recent Admissions</div>', unsafe_allow_html=True)
         rows = [{"Patient ID": f"P-{r['patient_id']}",
@@ -1106,9 +1105,9 @@ with tab2:
                 for r in list(st.session_state.patients.values())[-10:]]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# ═════════════════════════════════════════════════════════════════════════════
+
 # TAB 3
-# ═════════════════════════════════════════════════════════════════════════════
+
 with tab3:
     st.markdown('<div class="section-title">Search Patient Record</div>', unsafe_allow_html=True)
     st.caption("Enter the Patient ID saved in the Admission tab to load their record.")
@@ -1135,7 +1134,7 @@ with tab3:
     if loaded_pid and loaded_pid in st.session_state.patients:
         rec = st.session_state.patients[loaded_pid]
 
-        # ── Admission Summary ─────────────────────────────────────────────────
+        #Admission Summary
         st.markdown('<div class="section-title">Admission Summary</div>', unsafe_allow_html=True)
         sc1,sc2,sc3,sc4,sc5,sc6 = st.columns(6)
         sc1.metric("Patient Name",   rec["name"])
@@ -1149,7 +1148,7 @@ with tab3:
         [data-testid="stMetricValue"]{font-size:1.15rem !important;}
         </style>""", unsafe_allow_html=True)
 
-        # ── Admission details row ─────────────────────────────────────────────
+        #Admission details row
         st.markdown('<div class="section-title">Admission Details</div>', unsafe_allow_html=True)
         ad1,ad2,ad3,ad4,ad5 = st.columns(5)
         for _col, _lbl, _val in [
@@ -1168,7 +1167,7 @@ with tab3:
                 word-break:break-word">{_val}</div>
             </div>""", unsafe_allow_html=True)
 
-        # ── Post-Admission Variables ──────────────────────────────────────────
+        #Post-Admission Variables
         st.markdown('<div class="section-title">Post-Admission Variables</div>', unsafe_allow_html=True)
         st.caption("These variables are collected after admission. All are used for updated mortality and readmission predictions.")
 
@@ -1201,7 +1200,7 @@ with tab3:
             upd = st.form_submit_button("🔄  Update & Predict", use_container_width=True)
 
         if upd:
-            # Post-admission mortality uses all 7 admission features + procedure_count, drg_severity, drg_mortality
+            #Post-admission mortality uses all 7 admission features + procedure_count, drg_severity, drg_mortality
             post = dict(
                 age=rec["age"],
                 gender=rec["gender"],
@@ -1214,7 +1213,7 @@ with tab3:
                 drg_severity=drgs,
                 drg_mortality=drgm,
             )
-            # Readmission uses all of the above + cardiac_proc_flag
+            #Readmission uses all of the above + cardiac_proc_flag
             ri = {**post, "cardiac_proc_flag": cflag}
 
             m2p = enc_pred(mort2_model,  mort2_enc,   CAT_MORT2, NUM_MORT2, post)
@@ -1235,7 +1234,7 @@ with tab3:
             st.session_state.patients[loaded_pid] = rec
             st.success("✅  Post-admission record updated successfully.")
 
-            # ── Results ───────────────────────────────────────────────────────
+            #Results
             st.markdown('<div class="section-title">Updated Predictions</div>', unsafe_allow_html=True)
             u1,u2,u3 = st.columns(3)
             m2c = "pred-good" if m2v<10 else ("pred-warn" if m2v<25 else "pred-bad")

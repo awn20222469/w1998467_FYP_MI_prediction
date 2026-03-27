@@ -351,7 +351,7 @@ print(pd.DataFrame(X_train_enc[:20].toarray(), columns=encoder.get_feature_names
 print(y_train_los.value_counts(normalize=True))
 print(y_test_los.value_counts(normalize=True))
 
-###########################
+############################################################################################################
 
 #Modeling and evaluation 1 - Logistic regression for LOS
 
@@ -421,3 +421,54 @@ print("\nClassification Report (Gradient Boosting - LOS):\n", classification_rep
 print("Confusion Matrix (Gradient Boosting - LOS):\n", confusion_matrix(y_test_los, y_pred_gb))
 print("ROC-AUC (Gradient Boosting - LOS):", round(roc_auc_score((y_test_los == "≥ 7 days").astype(int), y_prob_gb), 4))
 
+#Modeling and evaluation 5 - Cat boosting for LOS
+
+from catboost import CatBoostClassifier
+
+#class weights (balanced) - without extra imports
+_counts = y_train_los.value_counts()
+w_short = float(_counts.max() / _counts.get("< 7 days", 1))
+w_long  = float(_counts.max() / _counts.get("≥ 7 days", 1))
+
+catboost_los = CatBoostClassifier(
+    iterations=800,
+    learning_rate=0.05,
+    depth=6,
+    loss_function="Logloss",
+    class_weights=[w_short, w_long],   # order matches classes: ["< 7 days", "≥ 7 days"]
+    random_seed=42,
+    verbose=False
+)
+
+catboost_los.fit(X_train_enc, y_train_los)
+
+y_pred_cb = catboost_los.predict(X_test_enc)
+y_prob_cb = catboost_los.predict_proba(X_test_enc)[:, 1]
+
+print("\n", "Accuracy (CatBoost - LOS):", round(accuracy_score(y_test_los, y_pred_cb), 4))
+print("\nClassification Report (CatBoost - LOS):\n", classification_report(y_test_los, y_pred_cb))
+print("Confusion Matrix (CatBoost - LOS):\n", confusion_matrix(y_test_los, y_pred_cb))
+print("ROC-AUC (CatBoost - LOS):", round(roc_auc_score((y_test_los == "≥ 7 days").astype(int), y_prob_cb), 4))
+
+#Modeling and evaluation 6 - Suppoirt Vector Machine(SVM) for LOS
+
+from sklearn.svm import SVC
+
+svm_los = SVC(
+    kernel="rbf",
+    C=1.0,
+    gamma="scale",
+    class_weight="balanced",
+    probability=True,
+    random_state=42
+)
+
+svm_los.fit(X_train_enc, y_train_los)
+
+y_pred_svm = svm_los.predict(X_test_enc)
+y_prob_svm = svm_los.predict_proba(X_test_enc)[:, 1]
+
+print("\n", "Accuracy (SVM - LOS):", round(accuracy_score(y_test_los, y_pred_svm), 4))
+print("\nClassification Report (SVM - LOS):\n", classification_report(y_test_los, y_pred_svm))
+print("Confusion Matrix (SVM - LOS):\n", confusion_matrix(y_test_los, y_pred_svm))
+print("ROC-AUC (SVM - LOS):", round(roc_auc_score((y_test_los == "≥ 7 days").astype(int), y_prob_svm), 4))

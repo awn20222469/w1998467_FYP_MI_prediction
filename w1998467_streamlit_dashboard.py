@@ -5,10 +5,11 @@ import joblib
 import plotly.graph_objects as go
 from scipy.sparse import hstack
 from datetime import datetime
+from pymongo import MongoClient
 
 st.set_page_config(
-    page_title="MI Analytics · IIT National Hospital",
-    page_icon="⚕️", layout="wide",
+    page_title="MI Analytics : IIT National Hospital",
+    page_icon="🩺", layout="wide",
     initial_sidebar_state="collapsed"
 )
 
@@ -217,13 +218,14 @@ label,.stSelectbox label,.stNumberInput label,.stTextInput label,.stRadio label{
 </style>
 """, unsafe_allow_html=True)
 
-#DATA & MODELS
+#loading data and models
 @st.cache_data
 def load_data():
     df = pd.read_csv("MI_finaldf.csv")
     df["admittime"] = pd.to_datetime(df["admittime"])
     df["year"] = df["admittime"].dt.year
-    df["curr_service"] = df["curr_service"].replace({"UNKNOWN":"Other","unknown":"Other"})
+   
+    df["curr_service"] = df["curr_service"].fillna("UNKNOWN")
     return df
 
 @st.cache_resource
@@ -232,22 +234,37 @@ def load_models():
         joblib.load("Final_LOS_Model.pkl"),       joblib.load("LOS_Encoder.pkl"),
         joblib.load("Final_Mortality_Model.pkl"),  joblib.load("Mortality_Admission_Encoder.pkl"),
         joblib.load("Final_Mortality_Post_Model.pkl"), joblib.load("Mortality_Post_Encoder.pkl"),
-        joblib.load("readmission_rf_model.pkl"),   joblib.load("readmission_encoder.pkl"),
-        joblib.load("readmission_threshold.pkl"),
+        joblib.load("Final_Readmission_Model.pkl"),   joblib.load("readmission_encoder.pkl"),
+        joblib.load("readmission_threshold.pkl"), joblib.load("LOS_Regression_Model.pkl"),
     )
 
 df = load_data()
 (los_model,los_enc,mort_model,mort_enc,
- mort2_model,mort2_enc,readmit_model,readmit_enc,readmit_thresh) = load_models()
+ mort2_model,mort2_enc,readmit_model,readmit_enc, readmit_thresh,los_reg_model) = load_models()
 
-MI_SERVICES = ["CMED","CSURG","MED","NMED","VSURG","SURG","OMED","NSURG","TRAUM","TSURG","Other"]
+#mongo db connection function
+@st.cache_resource
+def init_mongo():
+    client = MongoClient(st.secrets["mongo"]["uri"])
+    return client["w1998467_MI_Analytics"]["Patients"]
+
+mongo_patients = init_mongo()
+
+MI_SERVICES = ["CMED","CSURG","MED","NMED","VSURG","SURG","OMED","NSURG","TRAUM","TSURG","UNKNOWN"]
 mi_svcs_in_data = [s for s in MI_SERVICES if s in df["curr_service"].unique()]
 
-#PLOT HELPERS
+DISCHARGE_LOCATIONS = [
+    "HOME", "HOME HEALTH CARE", "SKILLED NURSING FACILITY", "REHAB",
+    "CHRONIC/LONG TERM ACUTE CARE", "HOSPICE", "ACUTE HOSPITAL",
+    "AGAINST ADVICE", "ASSISTED LIVING", "HEALTHCARE FACILITY",
+    "OTHER", "OTHER FACILITY", "PSYCH FACILITY", "DIED"
+]
+
+#Plot colours
 CHART_BG = "rgba(236,239,245,0.75)"
 GRID     = "rgba(15,45,94,0.06)"
-FC       = "#4a5a74"                   # axis/tick text
-TITLE_C  = "#0f2d5e"                  # chart title
+FC       = "#4a5a74"
+TITLE_C  = "#0f2d5e" 
 BLUE     = "#1e40af"
 RED      = "#be123c"
 GREEN    = "#34d399"
@@ -263,10 +280,6 @@ LEG = dict(
     bordercolor="rgba(255,255,255,0.2)", borderwidth=1,
     font=dict(size=12, color="#ffffff"),
 )
-
-def cw(fig_callable):
-    """Wrap a plotly chart in the styled card div."""
-    return fig_callable
 
 def bl(fig, title="", h=None, margin=None):
     m = margin or dict(l=12, r=20, t=52, b=12)
@@ -287,10 +300,8 @@ def bl(fig, title="", h=None, margin=None):
     return fig
 
 def chart(fig, outcome="None"):
-    """Output a chart. When dimmed, washes out colours inside plotly itself."""
     dimmed = is_dimmed(outcome)
     if dimmed:
-        # Wash out inside plotly — change bg, axis, title to very faint
         fig.update_layout(
             plot_bgcolor="rgba(236,239,245,0.75)",
             paper_bgcolor="rgba(236,239,245,0.75)",
@@ -305,7 +316,6 @@ def chart(fig, outcome="None"):
                        gridcolor="rgba(15,45,94,0.02)",
                        linecolor="rgba(15,45,94,0.05)"),
         )
-        # Wash out all traces
         for trace in fig.data:
             if hasattr(trace, 'opacity'):
                 trace.opacity = 0.12
@@ -343,108 +353,87 @@ def make_gauge(value, title):
                       margin=dict(l=30,r=30,t=60,b=10), height=260)
     return fig
 
-#PREDICTION HELPERS
+#Prediction variables
 CAT_LOS   = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
 NUM_LOS   = ["age","num_diagnoses_at_admission"]
 CAT_MORT  = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
 NUM_MORT  = ["age","num_diagnoses_at_admission"]
 CAT_MORT2 = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
 NUM_MORT2 = ["age","num_diagnoses_at_admission","procedure_count","drg_severity","drg_mortality"]
-CAT_READ  = ["gender","admission_type","curr_service","admit_weekend","prior_mi"]
-NUM_READ  = ["age","num_diagnoses_at_admission","procedure_count","drg_severity","drg_mortality","cardiac_proc_flag"]
+
+CAT_READ  = ["gender","admission_type","curr_service","discharge_location","admit_weekend","prior_mi"]
+NUM_READ  = ["age","num_diagnoses_at_admission","los_days","procedure_count","drg_severity","drg_mortality","cardiac_proc_flag"]
+
+def to_prior_mi_yn(val):
+    """Convert any prior_mi representation to the Y/N the encoders expect."""
+    return "Y" if str(val).strip() in ["1", "1.0", "Y", "y", "Yes", "yes"] else "N"
 
 def enc_pred(model, encoder, cat_cols, num_cols, inp):
+    """General prediction helper — uses sparse hstack (for RF/CatBoost)."""
     row = pd.DataFrame([inp])
+    row["prior_mi"] = to_prior_mi_yn(row["prior_mi"].iloc[0])
     for c in cat_cols: row[c] = row[c].astype(str)
     X_cat = encoder.transform(row[cat_cols])
     X_num = row[num_cols].astype(float).values
     return float(model.predict_proba(hstack([X_cat,X_num]))[0][1])
 
-def avg_los_sim(inp):
-    """Find similar patients using all 7 LOS model features, with progressive fallback."""
-    pmi = int(float(str(inp["prior_mi"])))
-    # Level 1: all 7 features (exact match except age ±10)
-    s = df[
-        (df["age"].between(inp["age"]-10, inp["age"]+10)) &
-        (df["gender"]==inp["gender"]) &
-        (df["admission_type"]==inp["admission_type"]) &
-        (df["curr_service"]==inp["curr_service"]) &
-        (df["admit_weekend"]==inp["admit_weekend"]) &
-        (df["prior_mi"].apply(lambda x: 1 if str(x).strip() in ["1","1.0","Yes","yes","Y","y"] else 0)==pmi) &
-        (df["num_diagnoses_at_admission"].between(
-            max(0,inp["num_diagnoses_at_admission"]-5),
-            inp["num_diagnoses_at_admission"]+5))
-    ]
-    # Level 2: drop diagnoses range
-    if len(s) < 10:
-        s = df[
-            (df["age"].between(inp["age"]-10, inp["age"]+10)) &
-            (df["gender"]==inp["gender"]) &
-            (df["admission_type"]==inp["admission_type"]) &
-            (df["curr_service"]==inp["curr_service"]) &
-            (df["admit_weekend"]==inp["admit_weekend"]) &
-            (df["prior_mi"].apply(lambda x: 1 if str(x).strip() in ["1","1.0","Yes","yes","Y","y"] else 0)==pmi)
-        ]
-    # Level 3: drop prior_mi and weekend
-    if len(s) < 10:
-        s = df[
-            (df["age"].between(inp["age"]-10, inp["age"]+10)) &
-            (df["gender"]==inp["gender"]) &
-            (df["admission_type"]==inp["admission_type"]) &
-            (df["curr_service"]==inp["curr_service"])
-        ]
-    # Level 4: drop service
-    if len(s) < 10:
-        s = df[
-            (df["age"].between(inp["age"]-10, inp["age"]+10)) &
-            (df["gender"]==inp["gender"]) &
-            (df["admission_type"]==inp["admission_type"])
-        ]
-    # Level 5: age and gender only
-    if len(s) < 5:
-        s = df[(df["age"].between(inp["age"]-10,inp["age"]+10)) & (df["gender"]==inp["gender"])]
-    return round(s["los_days"].mean() if len(s)>0 else df["los_days"].mean(), 1)
+def enc_pred_readmit(model, encoder, inp):
+    """Readmission prediction — XGBoost requires dense array."""
+    row = pd.DataFrame([inp])
+    row["prior_mi"] = to_prior_mi_yn(row["prior_mi"].iloc[0]) 
+    for c in CAT_READ: row[c] = row[c].astype(str)
+    X_cat = encoder.transform(row[CAT_READ])
+    X_num = row[NUM_READ].astype(float).values
+    X_dense = hstack([X_cat, X_num]).toarray()
+    return float(model.predict_proba(X_dense)[0][1])
+
+def predict_los_days(inp):
+    """Predict continuous LOS in days using Linear Regression model."""
+    row = pd.DataFrame([inp])
+    row["prior_mi"] = to_prior_mi_yn(row["prior_mi"].iloc[0])
+    for c in CAT_LOS: row[c] = row[c].astype(str)
+    X_cat = los_enc.transform(row[CAT_LOS])
+    X_num = row[NUM_LOS].astype(float).values
+    pred  = los_reg_model.predict(hstack([X_cat, X_num]))[0]
+    return round(max(0.1, pred), 1)  #to avoid negative prediction
 
 def avg_read_sim(inp):
     s = df[(df["readmit_30d"]==1) & (df["age"].between(inp["age"]-10,inp["age"]+10))]
     return round(s["days_to_readmit"].mean() if len(s)>=5
                  else df[df["readmit_30d"]==1]["days_to_readmit"].mean(), 1)
 
-#SESSION STATE
+#including available/unavailable doctors
 if "patients" not in st.session_state: st.session_state.patients = {}
 if "doc_avail" not in st.session_state:
     st.session_state.doc_avail = {
-        "Dr. Ziyard Awn":True,"Dr. Taqee Rasheed":True,"Dr. Bimanya Ratnayake":False,
-        "Dr. Sethmika Bellana":True,"Dr. Vinulya Fernando":False,
-        "Dr. Marutheesan Krishnakumar":True,"Dr. Shamendry Stepehen":True,
-        "Dr. Lubna Tuwannoor":False,"Dr. Nethmal Dassanayake":True,
+        "Dr. Pandula Athaudaarchchi":True,"Dr. Dev Kesava":True,"Dr. M. H. M. Zacky":False,
+        "Dr. Amila Walawwatta":True,"Dr. Rajitha Y. De Silva":False,
+        "Dr. Asunga Dunuwille":True,"Dr. Sandamali Premarathna":True,
+        "Dr. M.B.F Rahuman":False,"Dr. Shehan Perera":True,
         "Acute MI team":True,
     }
 
 DOCTORS = {
-    "Dr. Ziyard Awn":               {"spec":"General Cardiology","tel":"+94 11 269 4000"},
-    "Dr. Taqee Rasheed":            {"spec":"Interventional Cardiology","tel":"+94 11 269 4001"},
-    "Dr. Bimanya Ratnayake":        {"spec":"Heart surgeon","tel":"+94 11 269 4002"},
-    "Dr. Sethmika Bellana":         {"spec":"Electrophysiology","tel":"+94 11 269 4003"},
-    "Dr. Vinulya Fernando":         {"spec":"Heart Failure Specialist","tel":"+94 11 269 4004"},
-    "Dr. Marutheesan Krishnakumar": {"spec":"Cardiac Imaging","tel":"+94 11 269 4005"},
-    "Dr. Shamendry Stepehen":       {"spec":"Preventive Cardiology","tel":"+94 11 269 4006"},
-    "Dr. Lubna Tuwannoor":          {"spec":"Heart surgeon","tel":"+94 11 269 4007"},
-    "Dr. Nethmal Dassanayake":      {"spec":"Cardio-oncology","tel":"+94 11 269 4008"},
-    "Acute MI team":                {"spec":"Emergency Medicine/Internal Medicine","tel":"+94 11 269 4009"},
+    "Dr. Pandula Athaudaarchchi":   {"spec":"Cardiologist","tel":"+94 11 911 1000"},
+    "Dr. Dev Kesava":               {"spec":"Consultant Cardiothoracic Surgeon","tel":"+94 11 911 1001"},
+    "Dr. M. H. M. Zacky":           {"spec":"Interventional Cardiologist","tel":"+94 11 911 1002"},
+    "Dr. Amila Walawwatta":         {"spec":"Consultant Cardiologist","tel":"+94 11 911 1003"},
+    "Dr. Rajitha Y. De Silva":      {"spec":"Cardiothoracic Surgeon","tel":"+94 11 911 1004"},
+    "Dr. Asunga Dunuwille":         {"spec":"Cardiac Electrophysiologist","tel":"+94 11 911 1005"},
+    "Dr. Sandamali Premarathna":    {"spec":"Cardiologist","tel":"+94 11 911 1006"},
+    "Dr. M.B.F Rahuman":            {"spec":"Cardiologist","tel":"+94 11 911 1007"},
+    "Dr. Shehan Perera":            {"spec":"Pediatric Cardiologist","tel":"+94 11 911 1008"},
+    "Acute MI team":                {"spec":"Emergency Medicine/Internal Medicine","tel":"+94 11 911 1009"},
 }
 
-#SESSION STATE FOR FILTERS
-#Applying reset before widgets are instantiated
 if st.session_state.get("_reset", False):
     for k in ["hl_radio","svc_sel","adm_sel","gen_sel","age_sel"]:
         if k in st.session_state:
             del st.session_state[k]
     del st.session_state["_reset"]
 
-#SIDEBAR
+#Sidebar
 with st.sidebar:
-    #Hospital branding
     st.markdown("""
     <div style="padding:1.2rem 0.5rem 0.8rem 0.5rem;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:1rem">
       <div style="font-size:2rem;margin-bottom:0.4rem">🏥</div>
@@ -457,16 +446,14 @@ with st.sidebar:
                 unsafe_allow_html=True)
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0 0 1rem 0">', unsafe_allow_html=True)
 
-    #Outcome Highlight
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem">Outcome Highlight</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("hl_radio", "All")
-    highlight = st.radio("Highlight",["All","LOS","Mortality","Readmission"],
+    highlight = st.radio("Highlight",["All","Length of Stay","Mortality","Readmission"],
                           label_visibility="collapsed", key="hl_radio")
 
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:0.8rem 0">', unsafe_allow_html=True)
 
-    #Clinical Service
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem">Clinical Service</p>',
                 unsafe_allow_html=True)
     svc_opts = ["All"]+mi_svcs_in_data
@@ -474,7 +461,6 @@ with st.sidebar:
     sel_svc  = st.selectbox("Clinical Service", svc_opts,
                              label_visibility="collapsed", key="svc_sel")
 
-    #Admission Type
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Admission Type</p>',
                 unsafe_allow_html=True)
     adm_opts = ["All"]+sorted(df["admission_type"].dropna().unique().tolist())
@@ -482,14 +468,12 @@ with st.sidebar:
     sel_adm  = st.selectbox("Admission Type", adm_opts,
                              label_visibility="collapsed", key="adm_sel")
 
-    #Gender
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Gender</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("gen_sel", "All")
     sel_gender = st.selectbox("Gender",["All","Male (M)","Female (F)"],
                                label_visibility="collapsed", key="gen_sel")
 
-    #Age Group
     st.markdown('<p style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin:0.7rem 0 0.4rem 0">Age Group</p>',
                 unsafe_allow_html=True)
     st.session_state.setdefault("age_sel", "All")
@@ -499,10 +483,8 @@ with st.sidebar:
 
     st.markdown('<hr style="border-color:rgba(255,255,255,0.08);margin:1rem 0 0.7rem 0">', unsafe_allow_html=True)
 
-    #Patient count — computed after filters applied, so use placeholder
     count_placeholder = st.empty()
 
-    #Reset button
     if st.button("↺  Reset Filters", key="reset_btn", use_container_width=True):
         st.session_state["_reset"] = True
         st.rerun()
@@ -510,9 +492,8 @@ with st.sidebar:
     st.markdown('<p style="font-size:0.65rem;color:#334155;margin-top:0.8rem">Filters apply to Hospital Overview tab.</p>',
                 unsafe_allow_html=True)
 
-#APPLY FILTERS
+#Filters
 dff = df.copy()
-#Age group filter
 _age_bins = {"<40":(0,39),"40–50":(40,49),"50–60":(50,59),
              "60–70":(60,69),"70–80":(70,79),"80+":(80,999)}
 if sel_age_grp != "All":
@@ -524,35 +505,34 @@ if sel_adm!="All":
     dff = dff[dff["admission_type"]==sel_adm]
 if sel_svc!="All":
     dff = dff[dff["curr_service"]==sel_svc]
-#Updating patient count in sidebar
 count_placeholder.markdown(
-    f'<p style="font-size:0.82rem;font-weight:700;color:#93c5fd;margin:0">'    f'Showing: <span style="font-size:1rem;color:#f1f5f9">{len(dff):,}</span> patients</p>',
+    f'<p style="font-size:0.82rem;font-weight:700;color:#93c5fd;margin:0">'
+    f'Showing: <span style="font-size:1rem;color:#f1f5f9">{len(dff):,}</span> patients</p>',
     unsafe_allow_html=True
 )
 
 def is_dimmed(outcome):
-    """Returns True if this chart should be dimmed."""
     h = st.session_state.get("hl_radio", "All")
-    if h == "All": return False        # All selected — show everything
-    if outcome == "None": return False # general chart — always visible
-    return outcome != h                # dim if doesn't match selected outcome
+    if h == "All": return False
+    if outcome == "None": return False
+    return outcome != h
 
-def dim_start(outcome): return ""  # kept for compatibility — not used for dimming
+def dim_start(outcome): return ""
 def dim_end(): return ""
 
-# ─── HEADER ──────────────────────────────────────────────────────────────────
+#Header
 st.markdown(f"""
 <div class="dash-header">
   <div class="header-logo">
     <div class="header-logo-icon">🩺</div>
     <div>
       <div class="header-title">Myocardial Infarction - Patient Admission Analytics</div>
-      <div class="header-sub">Clinical Decision Support System &nbsp;·&nbsp; IIT National Hospital</div>
+      <div class="header-sub">Clinical Decision Support System &nbsp;:&nbsp; IIT National Hospital</div>
     </div>
   </div>
   <div class="header-right">
     <div class="header-date">{datetime.now().strftime("%d %B %Y")}</div>
-    <div class="header-hospital">{datetime.now().strftime("%H:%M")} &nbsp;·&nbsp; IIT National Hospital, Colombo</div>
+    <div class="header-hospital">{datetime.now().strftime("%H:%M")} &nbsp;:&nbsp; IIT National Hospital, Colombo</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -560,24 +540,22 @@ st.markdown(f"""
 tab1, tab2, tab3 = st.tabs([
     "🏥  HOSPITAL OVERVIEW",
     "📋  PATIENT ADMISSION & PREDICTION",
-    "🔄  POST-ADMISSION UPDATE",
+    "🔂  POST-ADMISSION UPDATE",
 ])
 
-# TAB 1
-
+#TAB 1
 with tab1:
     if len(dff)==0:
         st.warning("No data matches the current filters.")
         st.stop()
 
-    #KPI row
     k1,k2,k3,k4,k5 = st.columns(5)
     for col,icon,label,val,sub,outcome in [
-        (k1,"🏥","Total MI Admissions",  f"{len(dff):,}",                                           "All patients",      "None"),
-        (k2,"📅","Average Length of Stay", f"{round(dff['los_days'].mean(),1)} days",                 "All admissions",        "LOS"),
-        (k3,"⏳","Length of Stay ≥ 7 Days",    f"{round((dff['los_cat']=='≥ 7 days').mean()*100,1)}%",     "Extended stays",        "LOS"),
-        (k4,"💔","In-Hospital Mortality", f"{round(dff['hospital_expire_flag'].mean()*100,1)}%",      "Expired in-hospital",   "Mortality"),
-        (k5,"🔄","30-Day Readmission",    f"{round(dff['readmit_30d'].mean()*100,1)}%",               "Readmitted within 30 day",   "Readmission"),
+        (k1,"💊","Total MI Admissions",  f"{len(dff):,}", "13,152 unique patients", "None"),
+        (k2,"📆","Average Length of Stay", f"{round(dff['los_days'].mean(),1)} days", "All admissions", "Length of Stay"),
+        (k3,"⌛","Length of Stay ≥ 7 Days",    f"{round((dff['los_cat']=='≥ 7 days').mean()*100,1)}%", "Extended stays", "Length of Stay"),
+        (k4,"💔","In-Hospital Mortality", f"{round(dff['hospital_expire_flag'].mean()*100,1)}%", "Expired in-hospital", "Mortality"),
+        (k5,"🔃","30-Day Readmission",    f"{round(dff['readmit_30d'].mean()*100,1)}%", "Readmitted within 30 day", "Readmission"),
     ]:
         with col:
             _h = st.session_state.get("hl_radio","All")
@@ -591,12 +569,11 @@ with tab1:
 
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-    #SECTION 1: Demographics
     st.markdown('<div class="section-title">Patient Demographics & Trends</div>', unsafe_allow_html=True)
     c1,c2,c3 = st.columns([1.4,2,1.8])
 
+#Gender distribution 
     with c1:
-        st.markdown(dim_start("None"), unsafe_allow_html=True)
         gc = dff["gender"].value_counts()
         m_c = gc.get("M",0); f_c = gc.get("F",0)
         fig = go.Figure(go.Pie(
@@ -617,18 +594,15 @@ with tab1:
                 bgcolor="rgba(15,45,94,0.88)",
                 bordercolor="rgba(255,255,255,0.2)", borderwidth=1,
             ),
-            #No annotation in center
         )
         chart(fig)
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
+#MI admission over time
     with c2:
-        st.markdown(dim_start("None"), unsafe_allow_html=True)
-        # Yearly admissions — MIMIC uses anchor years, that is correct data
         yearly = dff.groupby("year").size().reset_index(name="count").sort_values("year")
         fig = go.Figure(go.Scatter(
             x=yearly["year"], y=yearly["count"],
-            mode="lines",                              # no markers — clean line
+            mode="lines",
             line=dict(color=TEAL2, width=2.5),
             fill="tozeroy", fillcolor="rgba(8,145,178,0.08)",
         ))
@@ -636,10 +610,9 @@ with tab1:
         fig.update_xaxes(title_text="Year", nticks=8, tickangle=0, showgrid=False)
         fig.update_yaxes(title_text="Admissions")
         chart(fig)
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
+#admission type breakdown
     with c3:
-        st.markdown(dim_start("None"), unsafe_allow_html=True)
         ac = dff["admission_type"].value_counts().sort_values(ascending=True)
         adm_pal = ["#0f4c81","#1e6091","#2e86c1","#117a8b","#0d9488",
                    "#1d4ed8","#1e3a5f","#4f46e5","#0c4a6e","#164e63"]
@@ -653,28 +626,24 @@ with tab1:
         bl(fig,"Admission Type Breakdown", margin=dict(l=12,r=90,t=52,b=12))
         fig.update_xaxes(title_text="Patient count", tickfont=dict(color=FC,size=11),
                          showgrid=True, gridcolor="rgba(15,45,94,0.06)")
-        fig.update_layout(showlegend=False, 
+        fig.update_layout(showlegend=False,
                           yaxis=dict(tickfont=dict(color=TITLE_C,size=9), showgrid=False,
                                      categoryorder="total ascending"))
         chart(fig)
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
-    #SECTION 2: Clinical Outcomes
-    #Row 2: Age Distribution | LOS by Service | Mortality by Age & Gender
     st.markdown('<div class="section-title">Clinical Outcomes Analysis</div>', unsafe_allow_html=True)
     c4,c5,c6 = st.columns(3)
 
+#Age distribution
     with c4:
-        st.markdown(dim_start("None"), unsafe_allow_html=True)
         fig = go.Figure(go.Histogram(x=dff["age"],nbinsx=25,marker_color=PURP,opacity=0.85))
         bl(fig,"Age Distribution")
         fig.update_xaxes(title_text="Age", showgrid=False)
         fig.update_yaxes(title_text="Patient count")
         chart(fig)
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
+#LOS category by service
     with c5:
-        st.markdown(dim_start("LOS"), unsafe_allow_html=True)
         top_svcs = dff["curr_service"].value_counts().head(6).index
         svc_sub  = dff[dff["curr_service"].isin(top_svcs)]
         if len(svc_sub)>0:
@@ -686,9 +655,7 @@ with tab1:
                                      orientation="h",marker_color=los_clrs.get(col,BLUE)))
             fig.update_layout(barmode="stack")
             bl(fig,"Length of Stay Category by Service (%)", margin=dict(l=12,r=12,t=52,b=65))
-            # horizontal bars: x is the value axis — keep x grid, remove y grid
-            fig.update_xaxes(title_text="%", showgrid=True,
-                             gridcolor="rgba(15,45,94,0.06)")
+            fig.update_xaxes(title_text="%", showgrid=True, gridcolor="rgba(15,45,94,0.06)")
             fig.update_yaxes(showgrid=False, tickfont=dict(color=TITLE_C,size=10))
             fig.update_layout(
                 legend=dict(orientation="h",y=-0.22,x=0.2,
@@ -696,12 +663,10 @@ with tab1:
                             bgcolor="rgba(15,45,94,0.88)",
                             bordercolor="rgba(255,255,255,0.2)",borderwidth=1),
             )
-            chart(fig, "LOS")
-        st.markdown(dim_end(), unsafe_allow_html=True)
+            chart(fig, "Length of Stay")
 
+#Moetality rate by age and gender
     with c6:
-        #Mortality Rate by Age & Gender — continuous age, 5-year bins
-        st.markdown(dim_start("Mortality"), unsafe_allow_html=True)
         sub_mort = dff.copy()
         sub_mort["age_bin"] = (sub_mort["age"]//5)*5
         ma = sub_mort.groupby(["age_bin","gender"])["hospital_expire_flag"].mean().unstack()*100
@@ -719,13 +684,11 @@ with tab1:
         fig.update_yaxes(title_text="Mortality Rate (%)")
         fig.update_layout(legend=LEG)
         chart(fig, "Mortality")
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
-    #SECTION 3: Row 3 - Mortality by Admission Type | Heatmap
     c9,c10 = st.columns(2)
 
+#In hospital mortality rate by admission
     with c9:
-        st.markdown(dim_start("Mortality"), unsafe_allow_html=True)
         mort_adm = dff.groupby("admission_type")["hospital_expire_flag"].mean()*100
         mort_adm = mort_adm.sort_values(ascending=True)
         mort_pal = ["#0369a1","#0891b2","#0d9488","#1d4ed8","#4f46e5",
@@ -744,11 +707,9 @@ with tab1:
         fig.update_yaxes(showgrid=False, tickfont=dict(color=TITLE_C,size=9))
         fig.update_layout(showlegend=False)
         chart(fig, "Mortality")
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
+#clincial outcome by service
     with c10:
-        # Heatmap — Clinical outcomes by service
-        st.markdown(dim_start("None"), unsafe_allow_html=True)
         top6 = dff["curr_service"].value_counts().head(6).index
         svc_heat = dff[dff["curr_service"].isin(top6)]
         heat_data = svc_heat.groupby("curr_service").agg(
@@ -773,14 +734,12 @@ with tab1:
         fig.update_xaxes(tickfont=dict(color=TITLE_C,size=10), showgrid=False)
         fig.update_yaxes(tickfont=dict(color=TITLE_C,size=11), showgrid=False)
         chart(fig)
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
-    #SECTION 4: Hospital Operations
     st.markdown('<div class="section-title">Hospital Operations</div>', unsafe_allow_html=True)
     op1,op2 = st.columns(2)
 
+#30-day readmission over time
     with op1:
-        st.markdown(dim_start("Readmission"), unsafe_allow_html=True)
         ry = dff.groupby("year")["readmit_30d"].mean()*100
         fig = go.Figure(go.Scatter(
             x=ry.index, y=ry.values,
@@ -792,11 +751,9 @@ with tab1:
         fig.update_xaxes(title_text="Year", nticks=8, showgrid=False)
         fig.update_yaxes(title_text="Readmission Rate (%)")
         chart(fig, "Readmission")
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
+#30-day readmission by age group
     with op2:
-        #30-Day Readmission Rate by Age Group
-        st.markdown(dim_start("Readmission"), unsafe_allow_html=True)
         age_read = dff.copy()
         age_read["age_group"] = pd.cut(age_read["age"],
                                         bins=[0,40,50,60,70,80,120],
@@ -819,12 +776,11 @@ with tab1:
                          range=[0, read_age["Readmission Rate (%)"].max()*1.3])
         fig.update_layout(showlegend=False)
         chart(fig, "Readmission")
-        st.markdown(dim_end(), unsafe_allow_html=True)
 
-    #Ward + Cost (Est.)
     st.markdown("<div style='height:0.2rem'></div>", unsafe_allow_html=True)
     c7,c8 = st.columns([1.1,1.9])
 
+#Ward occupancy chart 
     with c7:
         st.markdown(
             '<div class="chart-wrap" style="padding:0.8rem 1rem 0.5rem 1rem">'
@@ -848,16 +804,13 @@ with tab1:
             </div>""", unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+#Hospital cost chart
     with c8:
-        #LKR cost estimates - Sri Lankan hospital data
-        #Avg LOS: <7 days=3.5d, ≥7 days=12.8d
-        #Ward Rs.10,000/day | ICU Rs.15,000/day (occupied bed)
-        #Procedure: <7d = Coronary Angiogram Rs.37,400 | ≥7d = PTCA+1 stent Rs.583,000
         cost_df = pd.DataFrame({
             "LOS":  ["< 7 days"]*4 + ["≥ 7 days"]*4,
             "Type": ["Ward Cost","ICU Cost","Avg Procedure","Total Average"]*2,
-            "LKR":  [35000, 52500, 37400, 124900,
-                     128000,192000,583000,903000],
+            "LKR":  [34000, 51000, 37400, 122400,
+                    157000, 235500, 583000, 975500],         
         })
         fig = go.Figure()
         for ct,color in [
@@ -889,7 +842,7 @@ with tab1:
         )
         chart(fig)
 
-    #MEDICAL STAFF
+#medical staff doctors
     st.markdown('<div class="section-title">Medical Staff</div>', unsafe_allow_html=True)
     dcols = st.columns(5)
     for i,(name,info) in enumerate(DOCTORS.items()):
@@ -909,19 +862,25 @@ with tab1:
                 st.rerun()
 
 
-# TAB 2
-
+#TAB 2
 with tab2:
-    # Increment form_version to force all widgets to re-create with fresh keys
     if st.session_state.get("_reset_form", False):
         st.session_state["form_v"] = st.session_state.get("form_v", 0) + 1
         del st.session_state["_reset_form"]
 
-    fv = st.session_state.get("form_v", 0)  # form version suffix
-    next_pid   = max(st.session_state.patients.keys())+1 if st.session_state.patients else 1001
-    next_hadm  = next_pid + 20000  # suggest HADM_ID offset from patient ID
+    fv = st.session_state.get("form_v", 0)
+    try:
+        existing = list(mongo_patients.find({}, {"patient_id": 1, "_id": 0}))
+        if existing:
+            max_id = max([r["patient_id"] for r in existing if "patient_id" in r])
+            next_pid = max_id + 1
+        else:
+            next_pid = 1001
+    except:
+        next_pid = max(st.session_state.patients.keys())+1 if st.session_state.patients else 1001
 
-    #ID suggestion bar
+    next_hadm = next_pid + 20000
+
     id1, id2, _ = st.columns([0.9, 0.9, 3.2])
     with id1:
         st.markdown(f'<div class="next-pid">🪪 &nbsp; Suggested Patient ID: &nbsp;<span>P-{next_pid}</span></div>',
@@ -932,7 +891,6 @@ with tab2:
 
     form_col, prev_col = st.columns([1.6, 1])
 
-    #LEFT: Input Form
     with form_col:
         st.markdown('<div class="section-title" style="margin-top:0.3rem">Patient Input Form</div>',
                     unsafe_allow_html=True)
@@ -940,11 +898,11 @@ with tab2:
         with fc1:
             patient_id   = st.number_input("Patient ID",  min_value=1, value=next_pid, step=1, key=f"pid_{fv}")
             hadm_id      = st.number_input("HADM ID",     min_value=1, value=next_hadm, step=1, key=f"hadm_{fv}")
-            patient_name = st.text_input("Patient Name",  placeholder="e.g. John Perera", key=f"pname_{fv}")
+            patient_name = st.text_input("Patient Name",  placeholder="e.g. Sehan Herath", key=f"pname_{fv}")
             age_inp      = st.number_input("Age",         min_value=18, max_value=110, value=65, key=f"age_inp_{fv}")
             gender_inp   = st.selectbox("Gender",         ["M","F"], key=f"gender_inp_{fv}")
         with fc2:
-            adm_inp  = st.selectbox("Admission Type",     sorted(df["admission_type"].dropna().unique()), key=f"adm_inp_{fv}", help="Select the admission type for this patient")
+            adm_inp  = st.selectbox("Admission Type",     sorted(df["admission_type"].dropna().unique()), key=f"adm_inp_{fv}")
             svc_inp  = st.selectbox("Clinical Service",   mi_svcs_in_data, key=f"svc_inp_{fv}")
             wknd_inp = st.selectbox("Admission Day",      ["Weekday","Weekend"], key=f"wknd_inp_{fv}")
             pmi_inp  = st.selectbox("Prior MI History",   [0,1],
@@ -952,11 +910,10 @@ with tab2:
             ndiag_inp = st.number_input("No. of Diagnoses at Admission",
                                          min_value=0, max_value=50, value=5, key=f"ndiag_inp_{fv}")
         comments_inp = st.text_area("Additional Notes / Comments",
-                                     placeholder="e.g. patient has history of hypertension, on beta-blockers...",
+                                     placeholder="e.g. Other details/diagnoses of patient",
                                      height=90, key=f"comments_inp_{fv}")
-        save_clicked = st.button("💾  Save Patient & Predict", key=f"save_btn_{fv}", use_container_width=True)
+        save_clicked = st.button("💾  Save Patient Record", key=f"save_btn_{fv}", use_container_width=True)
 
-    #RIGHT: Live Preview
     with prev_col:
         st.markdown('<div class="section-title" style="margin-top:0.3rem">Live Predictions</div>',
                     unsafe_allow_html=True)
@@ -968,43 +925,41 @@ with tab2:
             mp  = enc_pred(mort_model,mort_enc,CAT_MORT,NUM_MORT,live_inp)
             lpd = "≥ 7 days" if lp>=0.5 else "< 7 days"
             mpv = round(mp*100,1)
-            lal = avg_los_sim(live_inp)
-            lc  = "pred-warn" if lpd=="≥ 7 days" else "pred-good"
+            lal = predict_los_days(live_inp)
+            lc  = "pred-warn" if lpd=="≥7 days" else "pred-good" 
             mc  = "pred-good" if mpv<10 else ("pred-warn" if mpv<25 else "pred-bad")
 
-            # LOS card + cost estimate
-            cost_per_day  = 10000  # LKR per ward day
-            cost_est      = round(lal * cost_per_day / 1000) * 1000   # round to nearest 1000
-            cost_low      = max(0, round(cost_est * 0.9 / 1000) * 1000)   # -10%
-            cost_high     = round(cost_est * 1.1 / 1000) * 1000            # +10%
+            cost_per_day  = 10000
+            cost_est      = round(lal * cost_per_day / 1000) * 1000
+            cost_low      = max(0, round(cost_est * 0.9 / 1000) * 1000)
+            cost_high     = round(cost_est * 1.1 / 1000) * 1000
             def fmt_lkr(v): return f"Rs. {v:,.0f}"
+            
+            #live prediction - LOS
             st.markdown(f"""
             <div class="live-card">
-              <div class="live-label">⚡ Live LOS Estimate</div>
+              <div class="live-label">🗓️ Live Length of Stay Estimate</div>
               <div class="{lc}" style="font-family:'Sora',sans-serif;font-size:1.8rem;font-weight:700;margin:0.3rem 0">{lpd}</div>
               <div style="font-size:0.8rem;color:#64748b;margin-top:0.4rem">
-                Avg. similar patients:&nbsp;
+                Predicted LOS:&nbsp;
                 <span style="font-size:1rem;font-weight:700;color:#0f2d5e">{lal} days</span>
               </div>
               <hr style="border:none;border-top:1px solid rgba(15,45,94,0.08);margin:0.6rem 0">
-              <div style="font-size:0.62rem;color:#2563eb;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem">💰 Estimated Ward Cost</div>
+              <div style="font-size:0.62rem;color:#2563eb;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.3rem">💵 Estimated Ward Cost</div>
               <div style="font-family:'Sora',sans-serif;font-size:1.3rem;font-weight:700;color:#0f2d5e">{fmt_lkr(cost_low)} – {fmt_lkr(cost_high)}</div>
-              <div style="font-size:0.68rem;color:#94a3b8;margin-top:0.2rem">Based on {lal} days × LKR 10,000/day · ward room only</div>
+              <div style="font-size:0.68rem;color:#94a3b8;margin-top:0.2rem">Based on {lal} days × LKR 10,000/day - ward room only</div>
             </div>""", unsafe_allow_html=True)
 
-            #Mortality card
             st.markdown(f"""
             <div class="live-card">
-              <div class="live-label">⚡ Live Mortality Estimate</div>
+              <div class="live-label">💔 Live Mortality Risk Estimate</div>
               <div class="{mc}" style="font-family:'Sora',sans-serif;font-size:2.2rem;font-weight:700;margin:0.3rem 0">{mpv}%</div>
             </div>""", unsafe_allow_html=True)
 
-            #Gauge
-            fig_live = make_gauge(mpv,"Mortality Risk (Live)")
+            fig_live = make_gauge(mpv,"Mortality Risk")
             fig_live.update_layout(height=200,margin=dict(l=20,r=20,t=45,b=5))
             st.plotly_chart(fig_live,use_container_width=True)
 
-            #Similar patients donut — LOS distribution
             _pmi = int(pmi_inp)
             sim = df[
                 (df["age"].between(age_inp-10,age_inp+10)) &
@@ -1027,6 +982,8 @@ with tab2:
                 sim = df[(df["age"].between(age_inp-10,age_inp+10)) & (df["gender"]==gender_inp)]
             ld  = sim["los_cat"].value_counts()
             n_sim = len(sim)
+            
+        #LOS pattern - similar patient pie chart    
             fig_s = go.Figure(go.Pie(
                 labels=ld.index.tolist(), values=ld.values.tolist(),
                 hole=0.58,
@@ -1042,9 +999,9 @@ with tab2:
                 margin=dict(l=10,r=10,t=65,b=55),
                 height=300,
                 title=dict(
-                    text=f"<b>LOS Pattern — Similar Patients</b><br>"
+                    text=f"<b>LOS Pattern - Similar Patients</b><br>"
                          f"<span style='font-size:11px;color:{FC}'>"
-                         f"{n_sim:,} patients · same age ±10, gender, admission & service</span>",
+                         f"{n_sim:,} patients - same age ±10, gender, admission & service</span>",
                     font=dict(size=12,color=TITLE_C,family="Inter"), x=0,
                 ),
                 legend=dict(
@@ -1063,7 +1020,6 @@ with tab2:
         except Exception:
             st.info("Fill in the form to see live predictions.")
 
-    #Save logic
     if save_clicked:
         if not patient_name.strip():
             st.error("Please enter a patient name.")
@@ -1080,18 +1036,19 @@ with tab2:
                 comments=comments_inp,
                 saved_at=datetime.now().isoformat(), **si,
                 los_prediction="≥ 7 days" if lp2>=0.5 else "< 7 days",
-                los_prob=round(lp2,4), avg_los_similar=avg_los_sim(si),
+                los_prob=round(lp2,4), predicted_los_days=predict_los_days(si),
                 mortality_risk_admission=round(mp2*100,2),
                 procedure_count=None, drg_severity=None, drg_mortality=None,
-                cardiac_proc_flag=None, updated_mortality_risk=None,
+                cardiac_proc_flag=None, discharge_location=None, los_days=None,
+                updated_mortality_risk=None,
                 readmission_prediction=None, readmission_prob=None,
                 avg_days_readmission=None, updated_at=None,
             )
+            mongo_patients.insert_one({**st.session_state.patients[patient_id]})
             st.success(f"✅  Patient {patient_name} (ID: P-{patient_id} | HADM: {hadm_id}) saved.")
             st.session_state["_reset_form"] = True
             st.rerun()
 
-    #Recent admissions table
     if st.session_state.patients:
         st.markdown('<div class="section-title">Recent Admissions</div>', unsafe_allow_html=True)
         rows = [{"Patient ID": f"P-{r['patient_id']}",
@@ -1100,14 +1057,34 @@ with tab2:
                  "Age":        r["age"],
                  "Gender":     r["gender"],
                  "LOS Pred":   r["los_prediction"],
-                 "Mortality":  f"{r['mortality_risk_admission']}%",
-                 "Saved":      r["saved_at"][:16].replace("T"," ")}
+                 "Admission Mortality %":  f"{r['mortality_risk_admission']}%",
+                 "Saved":      datetime.fromisoformat(r["saved_at"]).strftime("%d %b %Y %H:%M")}
                 for r in list(st.session_state.patients.values())[-10:]]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+        st.markdown('<div class="section-title">All Saved Patient Records (MongoDB)</div>', unsafe_allow_html=True)
+        try:
+            all_records = list(mongo_patients.find({}, {"_id": 0}))
+            if all_records:
+                records_df = pd.DataFrame(all_records)[[
+                    "patient_id", "hadm_id", "name", "age", "gender",
+                    "los_prediction", "mortality_risk_admission",
+                    "readmission_prediction", "saved_at"
+                ]]
+                records_df.columns = [
+                    "Patient ID", "HADM ID", "Name", "Age", "Gender",
+                    "LOS Pred", "Admission Mortality %", "Readmission Risk", "Saved"
+                ]
+                records_df["Saved"] = pd.to_datetime(records_df["Saved"]).dt.strftime("%d %b %Y %H:%M")
+                records_df["Admission Mortality %"] = records_df["Admission Mortality %"].apply(lambda x: f"{x}%" if pd.notna(x) else "—")
+                st.dataframe(records_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("No records saved yet.")
+        except Exception as e:
+            st.warning("Could not load records from database")
 
-# TAB 3
 
+#TAB 3
 with tab3:
     st.markdown('<div class="section-title">Search Patient Record</div>', unsafe_allow_html=True)
     st.caption("Enter the Patient ID saved in the Admission tab to load their record.")
@@ -1116,25 +1093,31 @@ with tab3:
     with sb1:
         search_clicked = st.button("🔍  Load Patient Record", key="search_btn", use_container_width=True)
     with sb2:
-        clear_clicked  = st.button("✕  Clear", key="clear_btn", use_container_width=True)
+        clear_clicked  = st.button("✖️ Clear", key="clear_btn", use_container_width=True)
 
     if clear_clicked:
         if "loaded_pid" in st.session_state:
             del st.session_state["loaded_pid"]
         st.rerun()
 
+#search logic in tab 3    
     if search_clicked:
         if search_id in st.session_state.patients:
             st.session_state["loaded_pid"] = search_id
-        else:
-            st.error(f"No patient found with ID {search_id}. Please save them in the Admission tab first.")
+        else: #trying mongo db if not in the current session state
+            mongo_rec = mongo_patients.find_one({"patient_id": search_id})
+            if mongo_rec:
+                mongo_rec.pop("_id", None)
+                st.session_state.patients[search_id] = mongo_rec
+                st.session_state["loaded_pid"] = search_id
+            else:
+                st.error(f"No patient found with ID {search_id}.")
 
     loaded_pid = st.session_state.get("loaded_pid", None)
 
     if loaded_pid and loaded_pid in st.session_state.patients:
         rec = st.session_state.patients[loaded_pid]
 
-        #Admission Summary
         st.markdown('<div class="section-title">Admission Summary</div>', unsafe_allow_html=True)
         sc1,sc2,sc3,sc4,sc5,sc6 = st.columns(6)
         sc1.metric("Patient Name",   rec["name"])
@@ -1143,12 +1126,10 @@ with tab3:
         sc4.metric("Age / Gender",   f"{rec['age']} / {rec['gender']}")
         sc5.metric("LOS Prediction", rec["los_prediction"])
         sc6.metric("Admission Mortality", f"{rec['mortality_risk_admission']}%")
-        # Increase metric value font size for admission summary
         st.markdown("""<style>
         [data-testid="stMetricValue"]{font-size:1.15rem !important;}
         </style>""", unsafe_allow_html=True)
 
-        #Admission details row
         st.markdown('<div class="section-title">Admission Details</div>', unsafe_allow_html=True)
         ad1,ad2,ad3,ad4,ad5 = st.columns(5)
         for _col, _lbl, _val in [
@@ -1167,7 +1148,7 @@ with tab3:
                 word-break:break-word">{_val}</div>
             </div>""", unsafe_allow_html=True)
 
-        #Post-Admission Variables
+        #Post admission variables
         st.markdown('<div class="section-title">Post-Admission Variables</div>', unsafe_allow_html=True)
         st.caption("These variables are collected after admission. All are used for updated mortality and readmission predictions.")
 
@@ -1196,28 +1177,82 @@ with tab3:
                     help="Select all that apply. If any cardiac procedure was performed, flag = 1"
                 )
                 cflag = 0 if (not cardiac_procs or cardiac_procs == ["None"]) else 1
-                st.caption(f"Cardiac proc flag: {'1 — Yes' if cflag==1 else '0 — None'}")
+                st.caption(f"Cardiac procedure flag: {'1 - Yes' if cflag==1 else '0 - None'}")
+
+            #Discharge Location & Actual LOS
+            st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                discharge_loc = st.selectbox(
+                    "Discharge Location",
+                    DISCHARGE_LOCATIONS,
+                    index=0,
+                    help="Where the patient is being discharged to. Used in the readmission risk model."
+                )
+            with dl2:
+                #computing days since the patient was saved/admitted
+                _admitted_str = rec.get("saved_at", None)
+                _days_elapsed = None
+                if _admitted_str:
+                    try:
+                        _admitted_dt = datetime.fromisoformat(_admitted_str)
+                        _days_elapsed = (datetime.now() - _admitted_dt).days
+                    except Exception:
+                        _days_elapsed = None
+
+                #building label with inline suggestion
+                _suggestion_text = ""
+                if _days_elapsed is not None:
+                    _suggestion_text = f"  ·  💡 Suggested: **{_days_elapsed} day{'s' if _days_elapsed != 1 else ''}** (since admission)"
+
+                los_days_inp = st.number_input(
+                    "Actual Length of Stay (days)",
+                    min_value=0.0, max_value=365.0,
+                    value=float(rec.get("predicted_los_days") or
+                                (7.0 if rec["los_prediction"]=="≥ 7 days" else 3.5)),
+                    step=0.5,
+                    help="Actual LOS in days at time of discharge. Pre-filled from LOS model estimate - override if known."
+                )
+                if _suggestion_text:
+                    st.caption(_suggestion_text)
+                else:
+                    st.caption(f"Model predicted: {rec['los_prediction']} · Predicted LOS: {rec.get('predicted_los_days','—')} days")
+            
             upd = st.form_submit_button("🔄  Update & Predict", use_container_width=True)
 
         if upd:
-            #Post-admission mortality uses all 7 admission features + procedure_count, drg_severity, drg_mortality
+            
             post = dict(
                 age=rec["age"],
                 gender=rec["gender"],
                 admission_type=rec["admission_type"],
                 curr_service=rec["curr_service"],
                 admit_weekend=rec["admit_weekend"],
-                prior_mi=str(rec["prior_mi"]),
+                prior_mi=to_prior_mi_yn(rec["prior_mi"]), 
                 num_diagnoses_at_admission=rec["num_diagnoses_at_admission"],
                 procedure_count=proc,
                 drg_severity=drgs,
                 drg_mortality=drgm,
             )
-            #Readmission uses all of the above + cardiac_proc_flag
-            ri = {**post, "cardiac_proc_flag": cflag}
+            
+            ri = dict(
+                age=rec["age"],
+                gender=rec["gender"],
+                admission_type=rec["admission_type"],
+                curr_service=rec["curr_service"],
+                discharge_location=discharge_loc,
+                admit_weekend=rec["admit_weekend"],
+                prior_mi=to_prior_mi_yn(rec["prior_mi"]),
+                num_diagnoses_at_admission=rec["num_diagnoses_at_admission"],
+                los_days=float(los_days_inp),
+                procedure_count=proc,
+                drg_severity=drgs,
+                drg_mortality=drgm,
+                cardiac_proc_flag=cflag,
+            )
 
-            m2p = enc_pred(mort2_model,  mort2_enc,   CAT_MORT2, NUM_MORT2, post)
-            rap = enc_pred(readmit_model, readmit_enc, CAT_READ,  NUM_READ,  ri)
+            m2p = enc_pred(mort2_model, mort2_enc, CAT_MORT2, NUM_MORT2, post)
+            rap = enc_pred_readmit(readmit_model, readmit_enc, ri)
             rpd = "High Risk" if rap >= readmit_thresh else "Low Risk"
             m2v = round(m2p*100,1)
             rv  = round(rap*100,1)
@@ -1225,16 +1260,25 @@ with tab3:
             rec.update(dict(
                 procedure_count=proc, drg_severity=drgs, drg_mortality=drgm,
                 cardiac_proc_flag=cflag,
+                discharge_location=discharge_loc,
+                los_days=float(los_days_inp),
                 updated_mortality_risk=round(m2p*100,2),
                 readmission_prediction=rpd,
                 readmission_prob=round(rap*100,2),
                 avg_days_readmission=avg_read_sim(post),
                 updated_at=datetime.now().isoformat(),
             ))
-            st.session_state.patients[loaded_pid] = rec
+
+            #updating Tab 3 after update and predict
+            st.session_state.patients[loaded_pid] = rec   
+            mongo_patients.update_one(
+                {"patient_id": loaded_pid},
+                {"$set": rec},
+                upsert=True
+            )
             st.success("✅  Post-admission record updated successfully.")
 
-            #Results
+    #Updated predictions - post admission mortality
             st.markdown('<div class="section-title">Updated Predictions</div>', unsafe_allow_html=True)
             u1,u2,u3 = st.columns(3)
             m2c = "pred-good" if m2v<10 else ("pred-warn" if m2v<25 else "pred-bad")
@@ -1249,16 +1293,16 @@ with tab3:
                 st.markdown(f'''<div class="pred-card">
                   <div class="pred-label">Updated Mortality Risk</div>
                   <div class="{m2c}">{m2v}%</div>
-                  <div class="pred-sub">Post-procedure · uses DRG severity & mortality</div>
+                  <div class="pred-sub">Post-procedure</div>
                 </div>''', unsafe_allow_html=True)
             with u3:
                 st.markdown(f'''<div class="pred-card">
                   <div class="pred-label">30-Day Readmission Risk</div>
-                  <div class="{rc2}">{rv}% — {rpd}</div>
+                  <div class="{rc2}">{rv}% - {rpd}</div>
                   <div class="pred-sub">Avg similar: <b style="color:#1e2a3a">{rec["avg_days_readmission"]} days to readmit</b></div>
                 </div>''', unsafe_allow_html=True)
 
-            st.markdown('<div class="section-title">Mortality Risk — Admission vs Post-Procedure</div>',
+            st.markdown('<div class="section-title">Mortality Risk - Admission vs Post-Procedure</div>',
                         unsafe_allow_html=True)
             gg1,gg2 = st.columns(2)
             with gg1:
@@ -1266,3 +1310,5 @@ with tab3:
                                 use_container_width=True)
             with gg2:
                 st.plotly_chart(make_gauge(m2v,"Post-Procedure"),use_container_width=True)
+
+

@@ -20,7 +20,7 @@ st.markdown("""
 html,body,[class*="css"]{ font-family:'Inter',sans-serif; }
 
 .stApp { background:#f0f4f9; color:#1e2a3a; }
-#MainMenu,footer,header{ visibility:hidden; }
+#MainMenu,footer{ visibility:hidden; }
 .block-container{ padding:0 1.5rem 2rem 1.5rem !important; max-width:100% !important; }
 
 [data-testid="stSidebar"]{

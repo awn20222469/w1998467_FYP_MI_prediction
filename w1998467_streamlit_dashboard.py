@@ -10,7 +10,7 @@ from pymongo import MongoClient
 st.set_page_config(
     page_title="MI Analytics : IIT National Hospital",
     page_icon="🩺", layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 #CSS
@@ -44,6 +44,11 @@ html,body,[class*="css"]{ font-family:'Inter',sans-serif; }
     background:#2563eb !important; border-radius:0 8px 8px 0 !important;
     color:#ffffff !important; top:50% !important;
     box-shadow:3px 0 12px rgba(37,99,235,0.4) !important;
+    visibility:visible !important;
+    opacity:1 !important;
+    z-index:999999 !important;
+    position:fixed !important;
+    left:0 !important;
 }
 [data-testid="collapsedControl"] svg { color:#ffffff !important; fill:#ffffff !important; }
 /* Reset button styling */

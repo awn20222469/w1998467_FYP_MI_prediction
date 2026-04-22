@@ -20,7 +20,8 @@ st.markdown("""
 html,body,[class*="css"]{ font-family:'Inter',sans-serif; }
 
 .stApp { background:#f0f4f9; color:#1e2a3a; }
-#MainMenu,footer{ visibility:hidden; }
+#MainMenu,footer,header{ visibility:hidden; }
+[data-testid="collapsedControl"]{ visibility:visible !important; }
 .block-container{ padding:0 1.5rem 2rem 1.5rem !important; max-width:100% !important; }
 
 [data-testid="stSidebar"]{

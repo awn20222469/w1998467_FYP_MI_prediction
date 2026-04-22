@@ -235,12 +235,12 @@ def load_models():
         joblib.load("Final_Mortality_Model.pkl"),  joblib.load("Mortality_Admission_Encoder.pkl"),
         joblib.load("Final_Mortality_Post_Model.pkl"), joblib.load("Mortality_Post_Encoder.pkl"),
         joblib.load("Final_Readmission_Model.pkl"),   joblib.load("readmission_encoder.pkl"),
-        joblib.load("readmission_threshold.pkl"), joblib.load("LOS_Regression_Model.pkl"),
+        joblib.load("readmission_threshold.pkl"),
     )
 
 df = load_data()
 (los_model,los_enc,mort_model,mort_enc,
- mort2_model,mort2_enc,readmit_model,readmit_enc, readmit_thresh,los_reg_model) = load_models()
+ mort2_model,mort2_enc,readmit_model,readmit_enc, readmit_thresh) = load_models()
 
 #mongo db connection function
 @st.cache_resource
@@ -387,15 +387,18 @@ def enc_pred_readmit(model, encoder, inp):
     X_dense = hstack([X_cat, X_num]).toarray()
     return float(model.predict_proba(X_dense)[0][1])
 
+#continuos los days
 def predict_los_days(inp):
-    """Predict continuous LOS in days using Linear Regression model."""
     row = pd.DataFrame([inp])
     row["prior_mi"] = to_prior_mi_yn(row["prior_mi"].iloc[0])
     for c in CAT_LOS: row[c] = row[c].astype(str)
     X_cat = los_enc.transform(row[CAT_LOS])
     X_num = row[NUM_LOS].astype(float).values
-    pred  = los_reg_model.predict(hstack([X_cat, X_num]))[0]
-    return round(max(0.1, pred), 1)  #to avoid negative prediction
+    prob = float(los_model.predict_proba(hstack([X_cat, X_num]))[0][1])
+    mean_short = df[df['los_cat'] == '< 7 days']['los_days'].mean()
+    mean_long  = df[df['los_cat'] == '≥ 7 days']['los_days'].mean()
+    estimated  = (prob * mean_long) + ((1 - prob) * mean_short)
+    return round(max(0.1, estimated), 1)
 
 def avg_read_sim(inp):
     s = df[(df["readmit_30d"]==1) & (df["age"].between(inp["age"]-10,inp["age"]+10))]
@@ -549,6 +552,7 @@ with tab1:
         st.warning("No data matches the current filters.")
         st.stop()
 
+#KPI Cards - Total Admissions, Avg LOS, LOS≥7, Mortality, Readmission
     k1,k2,k3,k4,k5 = st.columns(5)
     for col,icon,label,val,sub,outcome in [
         (k1,"💊","Total MI Admissions",  f"{len(dff):,}", "13,152 unique patients", "None"),
